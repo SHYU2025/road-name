@@ -20,7 +20,7 @@
         button.action-btn { background-color: #27ae60; padding: 15px; font-size: 1.1rem; margin-top: 10px; }
         button.action-btn:hover { background-color: #219150; }
         
-        #resultArea { margin-top: 15px; padding: 15px; background: #e8f6f3; border-left: 4px solid #27ae60; display: none; }
+        #resultArea { margin-top: 15px; padding: 15px; background: #e8f6f3; border-radius: 8px; border-left: 5px solid #27ae60; display: none; }
         
         /* 오른쪽 지도 패널 (스크롤 가능) */
         .map-area { flex: 1; background: #ecf0f1; border-radius: 10px; border: 2px dashed #bdc3c7; overflow: auto; position: relative; display: flex; align-items: center; justify-content: center; }
@@ -51,6 +51,7 @@
         <button onclick="clearRoads()" style="background-color: #e74c3c;">도로 좌표 초기화</button>
 
         <h2>🏠 3. 건물 주소 발급</h2>
+        <input type="text" id="roadName" placeholder="도로 이름 (예: 중앙로, 다이아몬드길)">
         <div class="flex-row">
             <input type="number" id="bX" placeholder="건물 입구 X">
             <input type="number" id="bZ" placeholder="건물 입구 Z">
@@ -107,7 +108,6 @@
 
     // 2. 지도 클릭: 1픽셀 = 1블록 직관적 계산
     mapWrapper.addEventListener('click', function(e) {
-        // 이미지가 스크롤된 상태에서도 정확한 픽셀 오프셋을 가져옴
         const rect = mapWrapper.getBoundingClientRect();
         const px = Math.round(e.clientX - rect.left);
         const py = Math.round(e.clientY - rect.top);
@@ -115,7 +115,6 @@
         const startX = parseFloat(document.getElementById('startX').value) || 0;
         const startZ = parseFloat(document.getElementById('startZ').value) || 0;
 
-        // 1px = 1block 이므로 클릭한 픽셀 수만큼 단순히 더해줌
         const mcX = startX + px;
         const mcZ = startZ + py;
         
@@ -154,7 +153,7 @@
         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
     }
 
-    // 3. 건물 주소 계산 핵심 알고리즘 (이전 로직 동일)
+    // 3. 건물 주소 계산 핵심 알고리즘
     function calculateAddress() {
         const rawLines = roadInput.value.trim().split('\n');
         const road = [];
@@ -163,11 +162,12 @@
             if (parts.length >= 2) road.push({ x: parseFloat(parts[0]), z: parseFloat(parts[1]) });
         }
 
+        const roadName = document.getElementById('roadName').value.trim() || "이름없는 도로";
         const bX = parseFloat(document.getElementById('bX').value);
         const bZ = parseFloat(document.getElementById('bZ').value);
 
         if (road.length < 2 || isNaN(bX) || isNaN(bZ)) {
-            alert("지도를 클릭해 도로를 그리고, 건물 입구 좌표를 입력하세요!");
+            alert("지도를 클릭해 도로를 그리고, 건물 입구 좌표를 확인하세요!");
             return;
         }
 
@@ -206,10 +206,19 @@
         if (baseNum === 0) baseNum = 2;
         const addressNum = isLeft ? baseNum - 1 : baseNum;
 
+        // 결과 출력 디자인 업데이트
         const res = document.getElementById('resultArea');
         res.style.display = 'block';
-        res.innerHTML = `건물 번호: <strong style="color:#e74c3c; font-size:1.4em;">${addressNum}</strong><br>
-                         (위치: ${isLeft ? "왼쪽" : "오른쪽"}, 거리: ${totalDistance.toFixed(1)}m)`;
+        res.innerHTML = `
+            <div style="font-size: 1em; margin-bottom: 8px; color: #555;">✅ 발급 완료된 도로명 주소:</div>
+            <div style="font-size: 1.8em; font-weight: bold; color: #2c3e50; background: #fff; padding: 15px; border-radius: 8px; text-align: center; border: 2px solid #27ae60; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                ${roadName} <span style="color:#e74c3c;">${addressNum}</span>
+            </div>
+            <ul style="font-size: 0.9em; color: #7f8c8d; margin: 0; padding-left: 20px; line-height: 1.5;">
+                <li><strong>건물 위치:</strong> 진행 방향 기준 ${isLeft ? "왼쪽 (홀수)" : "오른쪽 (짝수)"}</li>
+                <li><strong>도로 기준 거리:</strong> ${totalDistance.toFixed(1)} 블록(m)</li>
+            </ul>
+        `;
     }
 </script>
 
