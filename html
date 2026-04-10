@@ -1,543 +1,169 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <title>마인크래프트 도시 서버 - 전체 지도 도로 스캐너</title>
-    <style>
-        body { font-family: 'Malgun Gothic', sans-serif; background-color: #f4f7f6; padding: 20px; color: #333; margin: 0; }
-        .wrap { display: flex; gap: 20px; height: calc(100vh - 40px); }
-        
-        /* 왼쪽 제어 패널 */
-        .sidebar { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 350px; display: flex; flex-direction: column; overflow-y: auto; }
-        h2 { font-size: 1.2rem; margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        label { font-weight: bold; display: block; margin-top: 15px; margin-bottom: 5px; font-size: 0.95rem; }
-        .hint { font-size: 0.8rem; color: #7f8c8d; margin-bottom: 8px; display: block; }
-        input, textarea, button { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ddd; border-radius: 5px; margin-bottom: 10px; }
-        textarea { height: 100px; font-family: monospace; resize: vertical; }
-        .flex-row { display: flex; gap: 10px; }
-        button { background-color: #2980b9; color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.2s; }
-        button:hover { background-color: #2471a3; }
-        button.action-btn { background-color: #27ae60; padding: 15px; font-size: 1.1rem; margin-top: 10px; }
-        button.action-btn:hover { background-color: #219150; }
-        
-        #resultArea { margin-top: 15px; padding: 15px; background: #e8f6f3; border-radius: 8px; border-left: 5px solid #27ae60; display: none; }
-        
-        /* 오른쪽 지도 패널 (스크롤 가능) */
-        .map-area { flex: 1; background: #ecf0f1; border-radius: 10px; border: 2px dashed #bdc3c7; overflow: auto; position: relative; display: flex; align-items: center; justify-content: center; }
-        
-        /* 캔버스와 이미지를 겹치기 위한 래퍼 (원본 크기 유지) */
-        #mapWrapper { position: relative; margin: auto; display: none; cursor: crosshair; }
-        #mapImage { display: block; user-select: none; pointer-events: none; }
-        #overlayCanvas { position: absolute; top: 0; left: 0; pointer-events: none; }
-    </style>
+  <meta charset="UTF-8">
+  <title>도로 주소 자동 생성기</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    canvas { border: 1px solid #ccc; display: block; }
+    #toolbar { padding: 10px; background: #f0f0f0; }
+    button { margin-right: 10px; }
+  </style>
 </head>
 <body>
 
-<div class="wrap">
-    <div class="sidebar">
-        <h2>🗺️ 1. 전체 지도 설정 (1px = 1block)</h2>
-        <input type="file" id="imageLoader" accept="image/*">
-        
-        <label>지도 영점 (맨 왼쪽 위 좌표)</label>
-        <span class="hint">이미지 가장 좌측 상단의 X, Z 좌표를 입력하세요.</span>
-        <div class="flex-row">
-            <input type="number" id="startX" placeholder="왼쪽 위 X" value="-2000">
-            <input type="number" id="startZ" placeholder="왼쪽 위 Z" value="-2000">
-        </div>
-
-        <h2>📍 2. 도로 웨이포인트 스캔</h2>
-        <span class="hint">지도를 클릭하여 도로를 스캔하세요.</span>
-        <textarea id="roadInput"></textarea>
-        <button onclick="clearRoads()" style="background-color: #e74c3c;">도로 좌표 초기화</button>
-
-        <h2>🏠 3. 건물 주소 발급</h2>
-        <input type="text" id="roadName" placeholder="도로 이름 (예: 중앙로, 다이아몬드길)">
-        <div class="flex-row">
-            <input type="number" id="bX" placeholder="건물 입구 X">
-            <input type="number" id="bZ" placeholder="건물 입구 Z">
-        </div>
-        <button class="action-btn" onclick="calculateAddress()">주소 발급하기</button>
-
-        <div id="resultArea"></div>
-    </div>
-
-    <div class="map-area" id="mapScrollArea">
-        <span id="placeholderText" style="color: #7f8c8d;">전체 지도를 업로드하세요. (스크롤 가능)</span>
-        <div id="mapWrapper">
-            <img id="mapImage" src="" alt="Map">
-            <canvas id="overlayCanvas"></canvas>
-        </div>
-    </div>
+<div id="toolbar">
+  <button onclick="mode='road'">도로 그리기</button>
+  <button onclick="mode='building'">건물 추가</button>
 </div>
 
-<script>
-    const imageLoader = document.getElementById('imageLoader');
-    const mapWrapper = document.getElementById('mapWrapper');
-    const mapImage = document.getElementById('mapImage');
-    const overlayCanvas = document.getElementById('overlayCanvas');
-    const ctx = overlayCanvas.getContext('2d');
-    const roadInput = document.getElementById('roadInput');
-    const placeholderText = document.getElementById('placeholderText');
-    const mapScrollArea = document.querySelector('.map-area');
-    
-    let clickedPoints = [];
-
-    // 1. 1:1 이미지 업로드 및 초기화
-    imageLoader.addEventListener('change', function(e) {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = function(event) {
-            mapImage.src = event.target.result;
-            mapImage.onload = () => {
-                mapScrollArea.style.alignItems = 'flex-start';
-                mapScrollArea.style.justifyContent = 'flex-start';
-                placeholderText.style.display = 'none';
-                mapWrapper.style.display = 'block';
-                
-                // 캔버스 크기를 이미지 원본 픽셀 크기와 1:1로 맞춤
-                overlayCanvas.width = mapImage.naturalWidth;
-                overlayCanvas.height = mapImage.naturalHeight;
-                
-                clearRoads();
-            }
-        }
-        reader.readAsDataURL(file);
-    });
-
-    // 2. 지도 클릭: 1픽셀 = 1블록 직관적 계산
-    mapWrapper.addEventListener('click', function(e) {
-        const rect = mapWrapper.getBoundingClientRect();
-        const px = Math.round(e.clientX - rect.left);
-        const py = Math.round(e.clientY - rect.top);
-
-        const startX = parseFloat(document.getElementById('startX').value) || 0;
-        const startZ = parseFloat(document.getElementById('startZ').value) || 0;
-
-        const mcX = startX + px;
-        const mcZ = startZ + py;
-        
-        if (roadInput.value.trim() !== "") roadInput.value += "\n";
-        roadInput.value += `${mcX}, ${mcZ}`;
-
-        clickedPoints.push({ x: px, y: py });
-        drawOverlay();
-    });
-
-    function drawOverlay() {
-        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        
-        if (clickedPoints.length > 1) {
-            ctx.beginPath();
-            ctx.lineWidth = 4;
-            ctx.strokeStyle = '#3498db';
-            ctx.moveTo(clickedPoints[0].x, clickedPoints[0].y);
-            for (let i = 1; i < clickedPoints.length; i++) {
-                ctx.lineTo(clickedPoints[i].x, clickedPoints[i].y);
-            }
-            ctx.stroke();
-        }
-
-        ctx.fillStyle = '#e74c3c';
-        clickedPoints.forEach(p => {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
-            ctx.fill();
-        });
-    }
-
-    function clearRoads() {
-        roadInput.value = "";
-        clickedPoints = [];
-        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-    }
-
-    // 3. 건물 주소 계산 핵심 알고리즘
-    function calculateAddress() {
-        const rawLines = roadInput.value.trim().split('\n');
-        const road = [];
-        for (let line of rawLines) {
-            const parts = line.split(',');
-            if (parts.length >= 2) road.push({ x: parseFloat(parts[0]), z: parseFloat(parts[1]) });
-        }
-
-        const roadName = document.getElementById('roadName').value.trim() || "이름없는 도로";
-        const bX = parseFloat(document.getElementById('bX').value);
-        const bZ = parseFloat(document.getElementById('bZ').value);
-
-        if (road.length < 2 || isNaN(bX) || isNaN(bZ)) {
-            alert("지도를 클릭해 도로를 그리고, 건물 입구 좌표를 확인하세요!");
-            return;
-        }
-
-        let minDistance = Infinity;
-        let bestSegment = null;
-        let currentRoadLength = 0;
-
-        for (let i = 0; i < road.length - 1; i++) {
-            const A = road[i], B = road[i + 1];
-            const ABx = B.x - A.x, ABz = B.z - A.z;
-            const APx = bX - A.x, APz = bZ - A.z;
-
-            const segLenSq = ABx * ABx + ABz * ABz;
-            const segLen = Math.sqrt(segLenSq);
-
-            let t = segLenSq > 0 ? (APx * ABx + APz * ABz) / segLenSq : 0;
-            t = Math.max(0, Math.min(1, t));
-
-            const projX = A.x + t * ABx, projZ = A.z + t * ABz;
-            const dist = Math.sqrt((bX - projX) ** 2 + (bZ - projZ) ** 2);
-
-            if (dist < minDistance) {
-                minDistance = dist;
-                bestSegment = { A, B, distBefore: currentRoadLength, distOnSegment: t * segLen };
-            }
-            currentRoadLength += segLen;
-        }
-
-        const cross = (bestSegment.B.x - bestSegment.A.x) * (bZ - bestSegment.A.z) - 
-                      (bestSegment.B.z - bestSegment.A.z) * (bX - bestSegment.A.x);
-        
-        const isLeft = cross > 0;
-        const totalDistance = bestSegment.distBefore + bestSegment.distOnSegment;
-        
-        let baseNum = Math.floor(totalDistance / 10) * 2;
-        if (baseNum === 0) baseNum = 2;
-        const addressNum = isLeft ? baseNum - 1 : baseNum;
-
-        // 결과 출력 디자인 업데이트
-        const res = document.getElementById('resultArea');
-        res.style.display = 'block';
-        res.innerHTML = `
-            <div style="font-size: 1em; margin-bottom: 8px; color: #555;">✅ 발급 완료된 도로명 주소:</div>
-            <div style="font-size: 1.8em; font-weight: bold; color: #2c3e50; background: #fff; padding: 15px; border-radius: 8px; text-align: center; border: 2px solid #27ae60; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-                ${roadName} <span style="color:#e74c3c;">${addressNum}</span>
-            </div>
-            <ul style="font-size: 0.9em; color: #7f8c8d; margin: 0; padding-left: 20px; line-height: 1.5;">
-                <li><strong>건물 위치:</strong> 진행 방향 기준 ${isLeft ? "왼쪽 (홀수)" : "오른쪽 (짝수)"}</li>
-                <li><strong>도로 기준 거리:</strong> ${totalDistance.toFixed(1)} 블록(m)</li>
-            </ul>
-        `;
-    }
-</script>
-
-</body>
-</html><!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <title>마인크래프트 도시 서버 - AI 마법봉 도로 스캐너</title>
-    <style>
-        body { font-family: 'Malgun Gothic', sans-serif; background-color: #f4f7f6; padding: 20px; color: #333; margin: 0; }
-        .wrap { display: flex; gap: 20px; height: calc(100vh - 40px); }
-        
-        /* 왼쪽 제어 패널 */
-        .sidebar { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); width: 380px; display: flex; flex-direction: column; overflow-y: auto; }
-        h2 { font-size: 1.2rem; margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        label { font-weight: bold; display: block; margin-top: 15px; margin-bottom: 5px; font-size: 0.95rem; }
-        .hint { font-size: 0.8rem; color: #7f8c8d; margin-bottom: 8px; display: block; }
-        input[type="text"], input[type="number"], input[type="file"], textarea { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ddd; border-radius: 5px; margin-bottom: 10px; }
-        textarea { height: 100px; font-family: monospace; resize: vertical; }
-        .flex-row { display: flex; gap: 10px; }
-        button { background-color: #2980b9; color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.2s; padding: 10px; border-radius: 5px; }
-        button:hover { background-color: #2471a3; }
-        button.action-btn { background-color: #27ae60; padding: 15px; font-size: 1.1rem; margin-top: 10px; }
-        button.action-btn:hover { background-color: #219150; }
-        
-        /* 모드 선택 UI */
-        .mode-box { background: #fdf2e9; padding: 15px; border-radius: 8px; border: 2px solid #f39c12; margin-bottom: 15px; }
-        .mode-box label { display: inline-block; margin: 0 10px 0 0; cursor: pointer; }
-        input[type="range"] { width: 100%; margin-top: 5px; }
-        
-        #resultArea { margin-top: 15px; padding: 15px; background: #e8f6f3; border-radius: 8px; border-left: 5px solid #27ae60; display: none; }
-        
-        /* 오른쪽 지도 패널 */
-        .map-area { flex: 1; background: #ecf0f1; border-radius: 10px; border: 2px dashed #bdc3c7; overflow: auto; position: relative; display: flex; align-items: center; justify-content: center; }
-        #mapWrapper { position: relative; margin: auto; display: none; cursor: crosshair; }
-        #mapImage { display: block; user-select: none; pointer-events: none; }
-        #overlayCanvas { position: absolute; top: 0; left: 0; pointer-events: none; }
-    </style>
-</head>
-<body>
-
-<div class="wrap">
-    <div class="sidebar">
-        <h2>🗺️ 1. 전체 지도 설정</h2>
-        <input type="file" id="imageLoader" accept="image/*">
-        <div class="flex-row">
-            <input type="number" id="startX" placeholder="맨 좌측 위 X" value="-2000">
-            <input type="number" id="startZ" placeholder="맨 좌측 위 Z" value="-2000">
-        </div>
-
-        <h2>🪄 2. 도로 웨이포인트 스캔</h2>
-        <div class="mode-box">
-            <label><input type="radio" name="clickMode" value="manual" checked> 🖱️ 수동 클릭</label>
-            <label><input type="radio" name="clickMode" value="magic"> 🪄 자동 마법봉</label>
-            
-            <div id="magicSettings" style="display:none; margin-top: 10px;">
-                <span class="hint">색상 오차 허용도 (기본: 30)</span>
-                <input type="range" id="colorTolerance" min="0" max="100" value="30">
-            </div>
-        </div>
-
-        <textarea id="roadInput" placeholder="추출된 마인크래프트 좌표가 여기에 표시됩니다."></textarea>
-        <button onclick="clearRoads()" style="background-color: #e74c3c;">도로 좌표 초기화</button>
-
-        <h2>🏠 3. 건물 주소 발급</h2>
-        <input type="text" id="roadName" placeholder="도로 이름 (예: 중앙로)">
-        <div class="flex-row">
-            <input type="number" id="bX" placeholder="건물 입구 X">
-            <input type="number" id="bZ" placeholder="건물 입구 Z">
-        </div>
-        <button class="action-btn" onclick="calculateAddress()">주소 발급하기</button>
-
-        <div id="resultArea"></div>
-    </div>
-
-    <div class="map-area" id="mapScrollArea">
-        <span id="placeholderText" style="color: #7f8c8d;">지도를 업로드하세요.</span>
-        <div id="mapWrapper">
-            <img id="mapImage" src="" alt="Map">
-            <canvas id="overlayCanvas"></canvas>
-        </div>
-    </div>
-</div>
+<canvas id="map" width="800" height="600"></canvas>
 
 <script>
-    // --- UI 및 캔버스 초기 설정 ---
-    const imageLoader = document.getElementById('imageLoader');
-    const mapWrapper = document.getElementById('mapWrapper');
-    const mapImage = document.getElementById('mapImage');
-    const overlayCanvas = document.getElementById('overlayCanvas');
-    const ctx = overlayCanvas.getContext('2d');
-    const roadInput = document.getElementById('roadInput');
-    const mapScrollArea = document.querySelector('.map-area');
-    
-    let clickedPoints = [];
-    let magicMode = false;
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d");
 
-    // 모드 변경 감지
-    document.querySelectorAll('input[name="clickMode"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            magicMode = (e.target.value === 'magic');
-            document.getElementById('magicSettings').style.display = magicMode ? 'block' : 'none';
-            mapWrapper.style.cursor = magicMode ? 'cell' : 'crosshair';
-        });
+let mode = 'road';
+let roads = [];
+let buildings = [];
+let currentRoad = null;
+
+canvas.addEventListener("click", (e) => {
+  const x = e.offsetX;
+  const y = e.offsetY;
+
+  if (mode === 'road') {
+    if (!currentRoad) {
+      currentRoad = { name: "Road " + (roads.length+1), points: [] };
+      roads.push(currentRoad);
+    }
+    currentRoad.points.push({x, y});
+  }
+
+  if (mode === 'building') {
+    const building = {x, y};
+    const road = getClosestRoad(building);
+    if (!road) return;
+
+    const number = getAddressNumber(building, road);
+    const side = getSideOfRoad(building, road);
+
+    const finalNumber = side === 'left' ? number*2+1 : number*2;
+
+    building.address = road.name + " " + finalNumber;
+    buildings.push(building);
+  }
+
+  draw();
+});
+
+// 거리 계산
+function getDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+// 점 → 선분 거리
+function distanceToSegment(p, a, b) {
+  const l2 = getDistance(a, b) ** 2;
+  if (l2 === 0) return getDistance(p, a);
+
+  let t = ((p.x - a.x)*(b.x - a.x) + (p.y - a.y)*(b.y - a.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+
+  const proj = {
+    x: a.x + t*(b.x - a.x),
+    y: a.y + t*(b.y - a.y)
+  };
+
+  return getDistance(p, proj);
+}
+
+// 가장 가까운 도로 찾기
+function getClosestRoad(point) {
+  let minDist = Infinity;
+  let closest = null;
+
+  roads.forEach(road => {
+    for (let i=0; i<road.points.length-1; i++) {
+      const dist = distanceToSegment(point, road.points[i], road.points[i+1]);
+      if (dist < minDist) {
+        minDist = dist;
+        closest = road;
+      }
+    }
+  });
+
+  return closest;
+}
+
+// 점을 선분 위로 투영
+function projectPoint(p, a, b) {
+  const l2 = getDistance(a, b) ** 2;
+  if (l2 === 0) return {on:false};
+
+  let t = ((p.x - a.x)*(b.x - a.x) + (p.y - a.y)*(b.y - a.y)) / l2;
+  if (t < 0 || t > 1) return {on:false};
+
+  return {
+    on: true,
+    distanceAlong: t * Math.sqrt(l2)
+  };
+}
+
+// 주소 번호 계산
+function getAddressNumber(point, road) {
+  let total = 0;
+
+  for (let i=0; i<road.points.length-1; i++) {
+    const a = road.points[i];
+    const b = road.points[i+1];
+
+    const proj = projectPoint(point, a, b);
+
+    if (proj.on) {
+      return Math.floor((total + proj.distanceAlong) / 10);
+    }
+
+    total += getDistance(a, b);
+  }
+
+  return Math.floor(total / 10);
+}
+
+// 좌우 판별
+function getSideOfRoad(point, road) {
+  for (let i=0; i<road.points.length-1; i++) {
+    const a = road.points[i];
+    const b = road.points[i+1];
+
+    const cross = (b.x - a.x)*(point.y - a.y) - (b.y - a.y)*(point.x - a.x);
+    return cross > 0 ? 'left' : 'right';
+  }
+}
+
+// 그리기
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // 도로
+  ctx.strokeStyle = 'black';
+  ctx.lineWidth = 2;
+  roads.forEach(r => {
+    ctx.beginPath();
+    r.points.forEach((p,i)=>{
+      if (i===0) ctx.moveTo(p.x,p.y);
+      else ctx.lineTo(p.x,p.y);
     });
+    ctx.stroke();
+  });
 
-    // 이미지 업로드
-    imageLoader.addEventListener('change', function(e) {
-        const file = e.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = function(event) {
-            mapImage.src = event.target.result;
-            mapImage.onload = () => {
-                mapScrollArea.style.alignItems = 'flex-start';
-                mapScrollArea.style.justifyContent = 'flex-start';
-                document.getElementById('placeholderText').style.display = 'none';
-                mapWrapper.style.display = 'block';
-                overlayCanvas.width = mapImage.naturalWidth;
-                overlayCanvas.height = mapImage.naturalHeight;
-                clearRoads();
-            }
-        }
-        reader.readAsDataURL(file);
-    });
-
-    // --- 핵심: 클릭 이벤트 (수동 & 마법봉 분기) ---
-    mapWrapper.addEventListener('click', function(e) {
-        const rect = mapWrapper.getBoundingClientRect();
-        const px = Math.round(e.clientX - rect.left);
-        const py = Math.round(e.clientY - rect.top);
-
-        if (magicMode) {
-            runMagicWand(px, py);
-        } else {
-            addWaypoint(px, py);
-            drawOverlay();
-        }
-    });
-
-    // 좌표 등록 공통 함수
-    function addWaypoint(px, py) {
-        const startX = parseFloat(document.getElementById('startX').value) || 0;
-        const startZ = parseFloat(document.getElementById('startZ').value) || 0;
-        
-        const mcX = startX + px;
-        const mcZ = startZ + py;
-        
-        if (roadInput.value.trim() !== "") roadInput.value += "\n";
-        roadInput.value += `${mcX}, ${mcZ}`;
-        clickedPoints.push({ x: px, y: py });
-    }
-
-    // --- 🔥 AI 마법봉 알고리즘 (Flood Fill) ---
-    function runMagicWand(startX, startY) {
-        alert("도로를 탐색합니다. (지도가 크면 몇 초 정도 걸릴 수 있습니다.)");
-        
-        // 1. 이미지 픽셀 데이터 가져오기 (가상 캔버스 활용)
-        const offCanvas = document.createElement('canvas');
-        offCanvas.width = overlayCanvas.width;
-        offCanvas.height = overlayCanvas.height;
-        const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
-        offCtx.drawImage(mapImage, 0, 0);
-        const imgData = offCtx.getImageData(0, 0, offCanvas.width, offCanvas.height);
-        const data = imgData.data;
-
-        // 클릭한 곳의 타겟 색상
-        const targetPos = (startY * offCanvas.width + startX) * 4;
-        const tr = data[targetPos], tg = data[targetPos+1], tb = data[targetPos+2];
-        const tolerance = parseInt(document.getElementById('colorTolerance').value);
-
-        // BFS (너비 우선 탐색) 준비
-        const visited = new Uint8Array(offCanvas.width * offCanvas.height);
-        const queue = [{x: startX, y: startY}];
-        visited[startY * offCanvas.width + startX] = 1;
-
-        // 웨이포인트 샘플링을 위한 변수
-        const scanPoints = [];
-        let pixelsExplored = 0;
-
-        while(queue.length > 0 && pixelsExplored < 50000) { // 무한 루프 방지 (최대 5만 픽셀 탐색)
-            const curr = queue.shift();
-            const cx = curr.x;
-            const cy = curr.y;
-            pixelsExplored++;
-
-            // 인접한 4방향 픽셀 검사
-            const neighbors = [ {x: cx+1, y: cy}, {x: cx-1, y: cy}, {x: cx, y: cy+1}, {x: cx, y: cy-1} ];
-
-            for(let n of neighbors) {
-                if(n.x >= 0 && n.x < offCanvas.width && n.y >= 0 && n.y < offCanvas.height) {
-                    const idx = n.y * offCanvas.width + n.x;
-                    if(!visited[idx]) {
-                        visited[idx] = 1;
-                        const p = idx * 4;
-                        const r = data[p], g = data[p+1], b = data[p+2];
-                        
-                        // 색상 차이 계산 (RGB 거리)
-                        const colorDist = Math.abs(r-tr) + Math.abs(g-tg) + Math.abs(b-tb);
-                        if(colorDist <= tolerance) {
-                            queue.push(n);
-                            
-                            // 웨이포인트 필터링: 기존 점들과 최소 20픽셀 이상 떨어져 있을 때만 등록 (선 따기용)
-                            let isFarEnough = true;
-                            for (let pt of scanPoints) {
-                                if (Math.sqrt((n.x - pt.x)**2 + (n.y - pt.y)**2) < 20) {
-                                    isFarEnough = false; break;
-                                }
-                            }
-                            if (isFarEnough) {
-                                scanPoints.push(n);
-                                addWaypoint(n.x, n.y); // 텍스트창 및 배열에 등록
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        drawOverlay();
-        alert(`탐색 완료! 자동으로 ${scanPoints.length}개의 도로 웨이포인트를 찍었습니다.`);
-    }
-
-    // 화면 그리기
-    function drawOverlay() {
-        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        
-        // 선
-        if (clickedPoints.length > 1) {
-            ctx.beginPath();
-            ctx.lineWidth = 3;
-            ctx.strokeStyle = magicMode ? '#9b59b6' : '#3498db'; // 마법봉 모드는 보라색 선
-            ctx.moveTo(clickedPoints[0].x, clickedPoints[0].y);
-            for (let i = 1; i < clickedPoints.length; i++) {
-                ctx.lineTo(clickedPoints[i].x, clickedPoints[i].y);
-            }
-            ctx.stroke();
-        }
-
-        // 점
-        ctx.fillStyle = magicMode ? '#8e44ad' : '#e74c3c';
-        clickedPoints.forEach(p => {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-            ctx.fill();
-        });
-    }
-
-    function clearRoads() {
-        roadInput.value = "";
-        clickedPoints = [];
-        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-    }
-
-    // --- 주소 발급 (동일) ---
-    function calculateAddress() {
-        const rawLines = roadInput.value.trim().split('\n');
-        const road = [];
-        for (let line of rawLines) {
-            const parts = line.split(',');
-            if (parts.length >= 2) road.push({ x: parseFloat(parts[0]), z: parseFloat(parts[1]) });
-        }
-
-        const roadName = document.getElementById('roadName').value.trim() || "이름없는 도로";
-        const bX = parseFloat(document.getElementById('bX').value);
-        const bZ = parseFloat(document.getElementById('bZ').value);
-
-        if (road.length < 2 || isNaN(bX) || isNaN(bZ)) {
-            alert("지도를 클릭해 도로를 그리고, 건물 입구 좌표를 확인하세요!");
-            return;
-        }
-
-        let minDistance = Infinity, bestSegment = null, currentRoadLength = 0;
-
-        for (let i = 0; i < road.length - 1; i++) {
-            const A = road[i], B = road[i + 1];
-            const ABx = B.x - A.x, ABz = B.z - A.z;
-            const APx = bX - A.x, APz = bZ - A.z;
-
-            const segLenSq = ABx * ABx + ABz * ABz;
-            const segLen = Math.sqrt(segLenSq);
-
-            let t = segLenSq > 0 ? (APx * ABx + APz * ABz) / segLenSq : 0;
-            t = Math.max(0, Math.min(1, t));
-
-            const projX = A.x + t * ABx, projZ = A.z + t * ABz;
-            const dist = Math.sqrt((bX - projX) ** 2 + (bZ - projZ) ** 2);
-
-            if (dist < minDistance) {
-                minDistance = dist;
-                bestSegment = { A, B, distBefore: currentRoadLength, distOnSegment: t * segLen };
-            }
-            currentRoadLength += segLen;
-        }
-
-        const cross = (bestSegment.B.x - bestSegment.A.x) * (bZ - bestSegment.A.z) - 
-                      (bestSegment.B.z - bestSegment.A.z) * (bX - bestSegment.A.x);
-        
-        const isLeft = cross > 0;
-        const totalDistance = bestSegment.distBefore + bestSegment.distOnSegment;
-        
-        let baseNum = Math.floor(totalDistance / 10) * 2;
-        if (baseNum === 0) baseNum = 2;
-        const addressNum = isLeft ? baseNum - 1 : baseNum;
-
-        const res = document.getElementById('resultArea');
-        res.style.display = 'block';
-        res.innerHTML = `
-            <div style="font-size: 1em; margin-bottom: 8px; color: #555;">✅ 발급 완료된 도로명 주소:</div>
-            <div style="font-size: 1.8em; font-weight: bold; color: #2c3e50; background: #fff; padding: 15px; border-radius: 8px; text-align: center; border: 2px solid #27ae60; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-                ${roadName} <span style="color:#e74c3c;">${addressNum}</span>
-            </div>
-            <ul style="font-size: 0.9em; color: #7f8c8d; margin: 0; padding-left: 20px; line-height: 1.5;">
-                <li><strong>건물 위치:</strong> 진행 방향 기준 ${isLeft ? "왼쪽 (홀수)" : "오른쪽 (짝수)"}</li>
-                <li><strong>도로 기준 거리:</strong> ${totalDistance.toFixed(1)} 블록(m)</li>
-            </ul>
-        `;
-    }
+  // 건물
+  ctx.fillStyle = 'blue';
+  buildings.forEach(b => {
+    ctx.fillRect(b.x-3, b.y-3, 6, 6);
+    ctx.fillText(b.address, b.x+5, b.y-5);
+  });
+}
 </script>
 
 </body>
